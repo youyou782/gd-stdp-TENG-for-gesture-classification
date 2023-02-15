@@ -32,7 +32,8 @@ def load_data(train_data_number, test_data_number, class_number):
     data = loadmat(file, mat_dtype=True)
 
     #choose classes here
-    index = [5,20,2,23,15,16,6,48,8,9]
+    # index = [5,20,2,23,15,16,6,48,8,9]
+    index = [37,20,2,23,15,16,6,48,8,9]
     for i in range(0,class_number):
 
         word = data['X'+ str(index[i])]
@@ -92,7 +93,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--n_neurons", type=int, default=150)
 parser.add_argument("--batch_size", type=int, default=10)
-parser.add_argument("--n_epochs", type=int, default=3)
+parser.add_argument("--n_epochs", type=int, default=2)
 parser.add_argument("--n_test", type=int, default=testdata_size)
 parser.add_argument("--n_train", type=int, default=traindata_size)
 parser.add_argument("--n_workers", type=int, default=-1)
@@ -136,8 +137,10 @@ device = "cpu"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
     gpu = True
 else:
+    torch.manual_seed(seed)
     gpu = False
 
 torch.set_num_threads(os.cpu_count() - 1)
