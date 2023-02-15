@@ -1,59 +1,115 @@
 import argparse
 import os
+from os import path
+from scipy.io import loadmat
+from snntorch import spikegen
 from time import time as t
-from bindsnet import encoding as ed
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torchvision import transforms
 from tqdm import tqdm
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
-from bindsnet import ROOT_DIR
-from bindsnet.analysis.plotting import (
-    plot_assignments,
-    plot_input,
-    plot_performance,
-    plot_spikes,
-    plot_voltages,
-    plot_weights,
-)
-from bindsnet.datasets import MNIST, DataLoader
-from bindsnet.encoding import PoissonEncoder
 from bindsnet.evaluation import all_activity, assign_labels, proportion_weighting
 from bindsnet.models import DiehlAndCook2015
 from bindsnet.network.monitors import Monitor
-from bindsnet.utils import get_square_assignments, get_square_weights
+
+def load_data(train_data_number, test_data_number, class_number):
+
+    ###load training data
+    # allocate RAM
+    train_data = np.empty(shape=(class_number,80,15,200))
+    test_data = np.empty(shape=(class_number,20,15,200))
+    train_label = np.empty(shape=(class_number,80))
+    test_label = np.empty(shape=(class_number,20))
+
+    train_data_co = np.empty(shape=(train_data_number,time,15,200))
+    test_data_co = np.empty(shape=(test_data_number,time,15,200))
+    train_label_co= []
+    test_label_co = []
+
+    file=path.dirname(path.dirname(__file__))+'/_50words.mat'
+    data = loadmat(file, mat_dtype=True)
+
+    #choose classes here
+    index = [5,20,2,23,15,16,6,48,8,9]
+    for i in range(0,class_number):
+
+        word = data['X'+ str(index[i])]
+
+        word = (np.array(word)).transpose(1,0)                    #(number_of_samples, 3000)
+        word = word.reshape(np.size(word,0), 200, 15)             #(number of samples, time_steps, channels)
+        word = word.transpose(0,2,1)                              #(number of samples, channels, time_steps)
+
+        a = np.split(word,[80,100])                               #(split data)
+        b = np.split(np.full((100),np.array(i)),[80])             #(generate and split labels)
+
+        train_data[i] = a[0]                                      # assign (0~80, 15, 200) for training
+        train_label[i] = b[0]
+
+        test_data[i] = a[1]                                       #assign (81~100, 15, 200) for testing
+        test_label[i] = b[1]
+    train_data = train_data.reshape(train_data_number,15,200)     #reshape for standardlization
+    test_data = test_data.reshape(test_data_number,15,200)
+    train_label_co = train_label.reshape(train_data_number,1)
+    test_label_co = test_label.reshape(test_data_number,1)
+    # standardlization: minus average value in each channel respectively and use the absolute value.
+    train_data = train_data.transpose(1,0,2)
+    test_data = test_data.transpose(1,0,2)
+    for i in range(15):
+        train_data[i] = train_data[i]-np.mean(train_data[i])
+    for i in range(15):
+        test_data[i] = test_data[i]-np.mean(test_data[i])
+    train_data = np.abs(train_data.transpose(1,0,2))
+    test_data = np.abs(test_data.transpose(1,0,2))
+    # normalization to [0,1]
+    for i in range(train_data_number):
+        train_data[i] = (train_data[i]-np.min(train_data[i]))/(np.max(train_data[i])-np.min(train_data[i]))
+    for i in range(test_data_number):
+        test_data[i] = (test_data[i]-np.min(test_data[i]))/(np.max(test_data[i])-np.min(test_data[i]))
+
+    train_data = torch.from_numpy(train_data)
+    test_data = torch.from_numpy(test_data)
+
+    #Choose to round the data to the nearest intger or not
+    # train_data = np.round(train_data)
+    # test_data = np.round(test_data)
+
+    # Apply a Poission Encoder
+    for i in range(train_data_number):
+        train_data_co[i] = spikegen.rate(train_data[i], num_steps= time, gain = 0.1)
+    for i in range(test_data_number):
+        test_data_co[i] = spikegen.rate(test_data[i], num_steps= time, gain = 0.1)
+    print("data load finished")
+    return train_data_co, train_label_co, test_data_co, test_label_co
 
 
 traindata_size = 800
 testdata_size = 200
-
+n_classes = 10
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=0)
-parser.add_argument("--n_neurons", type=int, default=1000)
-parser.add_argument("--batch_size", type=int, default=5)
-parser.add_argument("--n_epochs", type=int, default=10)
+parser.add_argument("--n_neurons", type=int, default=150)
+parser.add_argument("--batch_size", type=int, default=10)
+parser.add_argument("--n_epochs", type=int, default=3)
 parser.add_argument("--n_test", type=int, default=testdata_size)
 parser.add_argument("--n_train", type=int, default=traindata_size)
 parser.add_argument("--n_workers", type=int, default=-1)
-parser.add_argument("--n_updates", type=int, default=10)
+parser.add_argument("--n_updates", type=int, default=3) 
 parser.add_argument("--exc", type=float, default=22.5)
 parser.add_argument("--inh", type=float, default=120)
 parser.add_argument("--theta_plus", type=float, default=0.5)
-parser.add_argument("--time", type=int, default=100)
+parser.add_argument("--time", type=int, default=200)
 parser.add_argument("--dt", type=int, default=1.0)
 parser.add_argument("--intensity", type=float, default=128)
 parser.add_argument("--progress_interval", type=int, default=10)
 parser.add_argument("--train", dest="train", action="store_true")
 parser.add_argument("--test", dest="train", action="store_false")
 parser.add_argument("--plot", dest="plot", action="store_true")
-parser.add_argument("--gpu", dest="gpu", action="store_true")
-parser.set_defaults(plot=False, gpu=True)
+parser.set_defaults(plot=False)
 
 args = parser.parse_args()
-
 seed = args.seed
 n_neurons = args.n_neurons
 batch_size = args.batch_size
@@ -71,7 +127,6 @@ intensity = args.intensity
 progress_interval = args.progress_interval
 train = args.train
 plot = args.plot
-gpu = args.gpu
 
 update_steps = int(n_train / batch_size / n_updates)
 update_interval = update_steps * batch_size
@@ -79,24 +134,18 @@ update_interval = update_steps * batch_size
 device = "cpu"
 # Sets up Gpu use
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-if gpu and torch.cuda.is_available():
-    # torch.cuda.manual_seed_all(seed)
-    pass
+
+if torch.cuda.is_available():
+    gpu = True
 else:
-    torch.manual_seed(seed)
-    device = "cpu"
-    if gpu:
-        gpu = False
+    gpu = False
 
 torch.set_num_threads(os.cpu_count() - 1)
 print("Running on Device = ", device)
 
-# Determines number of workers to use
+# Determines number of workers to use 
 if n_workers == -1:
     n_workers = 0  # gpu * 1 * torch.cuda.device_count()
-
-n_sqrt = int(np.ceil(np.sqrt(n_neurons)))
-start_intensity = intensity
 
 # Build network.
 network = DiehlAndCook2015(
@@ -109,94 +158,17 @@ network = DiehlAndCook2015(
     nu=(4.5e-4, 4.5e-2),
     theta_plus=theta_plus,
     inpt_shape=(15, 200),
-)
+).to(device)
 
 # Directs network to GPU
 if gpu:
     network.to("cuda")
+
 test_target_mem=[]
 test_predict_mem=[]
-############################################################################
-from scipy.io import  loadmat
-import matplotlib as plt
-import matplotlib.pyplot as plt
-import numpy as np
-from sklearn import preprocessing
-from spikingjelly.activation_based import encoding
-from snntorch import spikegen
-file='C:\\Users\\Admin\\Desktop\\dataverse_files\\_50words.mat'
-data = loadmat(file, mat_dtype=True)
-min_max_scaler = preprocessing.MinMaxScaler()
-Z_scaler = preprocessing.StandardScaler()
-pe = encoding.PoissonEncoder()
-train_data = np.empty(shape=(10,80,15,200))
-test_data = np.empty(shape=(10,20,15,200))
-train_label = np.empty(shape=(10,80))
-test_label = np.empty(shape=(10,20))
-train_data_co = np.empty(shape=(traindata_size,time,15,200))
-test_data_co = np.empty(shape=(testdata_size,time,15,200))
-index = [6,7,8,9,10,11,12,13,14,15]
 
-for i in range(10,20):
-# for i in [6,7,8,15,17,23,24,28,36,45]:
-    num=str(i)
-    num='X'+num
-    word = data[num]
-    i=i-10
-    worddata = np.array(word) #(3000, Samples,)
-    worddata = worddata.transpose(1,0) #(Samples, 3000)
-    a = np.size(worddata,0)
-    worddata = worddata.reshape(a, 200, 15)
-    worddata = worddata.transpose(0,2,1) #(115,15,200)
+train_data_co, train_label_co, test_data_co, test_label_co = load_data(train_data_number = traindata_size, test_data_number = testdata_size, class_number = n_classes)
 
-    a = np.split(worddata,[80,100])
-    b = np.split(np.full((100),np.array(i)),[80])
-
-    train_data[i] = a[0] # (80, 15, 200)
-    train_label[i] = b[0]
-
-    test_data[i] = a[1] #(20, 15, 200)
-    test_label[i] = b[1]
-
-train_data = train_data.reshape(traindata_size,15,200)
-test_data = test_data.reshape(testdata_size,15,200)
-train_label_co = train_label.reshape(traindata_size,1)
-test_label_co = test_label.reshape(testdata_size,1)
-# 每个通道减均值
-train_data = train_data.transpose(1,0,2)
-test_data = test_data.transpose(1,0,2)
-for i in range(15):
-    train_data[i] = train_data[i]-np.mean(train_data[i])
-for i in range(15):
-    test_data[i] = test_data[i]-np.mean(test_data[i])
-train_data = np.abs(train_data.transpose(1,0,2))
-test_data = np.abs(test_data.transpose(1,0,2))
-# train_data = np.round(train_data)
-# test_data = np.round(test_data)
-#归一化
-for i in range(traindata_size):
-    train_data[i] = (train_data[i]-np.min(train_data[i]))/(np.max(train_data[i])-np.min(train_data[i]))
-for i in range(testdata_size):
-    test_data[i] = (test_data[i]-np.min(test_data[i]))/(np.max(test_data[i])-np.min(test_data[i]))
-# 泊松
-for i in range(traindata_size):
-    train_data_co[i] = spikegen.rate(torch.from_numpy(train_data[i]), num_steps= time, gain = 1).float()
-    # train_data_co[i] = torch.repeat_interleave(train_data[i], num_steps, dim = 0).reshape(20,15,200)
-for i in range(testdata_size):
-    test_data_co[i] = spikegen.rate(torch.from_numpy(test_data[i]), num_steps= time, gain = 1).float()
-    # test_data_co[i] = torch.repeat_interleave(test_data[i], num_steps, dim = 0).reshape(20,15,200)
-# 泊松
-# for i in range(traindata_size):
-#     print(i)
-#     train_data_co[i] = ed.poisson(torch.from_numpy(train_data[i]*128*5).float(), time = time, dt = dt, device = "cpu", approx=False).numpy()
-
-# for i in range(testdata_size):
-#     print(i)
-#     test_data_co[i] = ed.poisson(torch.from_numpy(test_data[i]*128*5).float(), time = time, dt = dt, device = "cpu", approx=False).numpy()
-#     # test_data_co[i] = ed.repeat(torch.from_numpy(test_data[i]*3).float(), time = time, dt = dt).numpy()
-
-print(train_data_co.shape) #[traindata_size,time,15,200]
-print(test_data_co.shape)
 # plt.figure()
 # plt.tight_layout()
 # for i in range(int(traindata_size/80)):
@@ -206,10 +178,8 @@ print(test_data_co.shape)
 #     plt.imshow(train_data_co[i*80][0])
 #     plt.pause(0.1)
 #     print(i)
-##############################################################
 
 # Neuron assignments and spike proportions.
-n_classes = 10
 assignments = -torch.ones(n_neurons, device=device)
 proportions = torch.zeros((n_neurons, n_classes), device=device)
 rates = torch.zeros((n_neurons, n_classes), device=device)
@@ -270,11 +240,6 @@ for epoch in range(n_epochs):
     # turn data into batch
     train_data = train_data.reshape(int(traindata_size/batch_size), batch_size, time, 15, 200)
     train_label = train_label.reshape(int(traindata_size/batch_size), batch_size)
-
-
-    if epoch % progress_interval == 0:
-        print("\nProgress: %d / %d (%.4f seconds)" % (epoch, n_epochs, t() - start))
-        start = t()
 
     pbar_training = tqdm(total=n_train)
     for step in range(int(traindata_size/batch_size)):
@@ -359,36 +324,6 @@ for epoch in range(n_epochs):
         # Get voltage recording.
         exc_voltages = exc_voltage_monitor.get("v")
         inh_voltages = inh_voltage_monitor.get("v")
-
-        # Optionally plot various simulation information.
-        if plot:
-            image = batch["image"][:, 0].view(28, 28)
-            inpt = inputs["X"][:, 0].view(time, 784).sum(0).view(28, 28)
-            lable = batch["label"][0]
-            input_exc_weights = network.connections[("X", "Ae")].w
-            square_weights = get_square_weights(
-                input_exc_weights.view(784, n_neurons), n_sqrt, 28
-            )
-            square_assignments = get_square_assignments(assignments, n_sqrt)
-            spikes_ = {
-                layer: spikes[layer].get("s")[:, 0].contiguous() for layer in spikes
-            }
-            voltages = {"Ae": exc_voltages, "Ai": inh_voltages}
-            inpt_axes, inpt_ims = plot_input(
-                image, inpt, label=lable, axes=inpt_axes, ims=inpt_ims
-            )
-            spike_ims, spike_axes = plot_spikes(spikes_, ims=spike_ims, axes=spike_axes)
-            weights_im = plot_weights(square_weights, im=weights_im)
-            assigns_im = plot_assignments(square_assignments, im=assigns_im)
-            perf_ax = plot_performance(
-                accuracy, x_scale=update_steps * batch_size, ax=perf_ax
-            )
-            voltage_ims, voltage_axes = plot_voltages(
-                voltages, ims=voltage_ims, axes=voltage_axes, plot_type="line"
-            )
-
-            plt.pause(1e-8)
-
         network.reset_state_variables()  # Reset state variables.
         pbar_training.update(batch_size)
     pbar_training.close()
@@ -455,8 +390,6 @@ print("Proportion weighting accuracy: %.2f \n" % (accuracy["proportion"] / n_tes
 print("Progress: %d / %d (%.4f seconds)" % (epoch + 1, n_epochs, t() - start))
 print("\nTesting complete.\n")
 
-
-print(len(test_target_mem),len(test_predict_mem))
 sns.set()
 
 C2 = confusion_matrix(test_target_mem,test_predict_mem,labels=range(0,10))
@@ -467,4 +400,4 @@ sns.heatmap(C2,annot= False,vmin = 0, vmax = 1, fmt='.2f',cmap='Blues', cbar= Tr
 plt.title('Confusion Matrix') #title
 plt.xlabel('Prediction') #x axis
 plt.ylabel('Label') #y  axis
-plt.savefig('./full_connect_rate.png')
+plt.savefig('./stdp-SNN.png')
